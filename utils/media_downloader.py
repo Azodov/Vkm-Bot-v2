@@ -155,12 +155,13 @@ def validate_youtube_cookies(cookies_path: Optional[Path]) -> Tuple[bool, str]:
 def _prepare_cookiefile_for_ydl(source_cookie_path: Optional[Path], temp_dir: str, tag: str) -> Optional[Path]:
     """
     Read-only cookiefile muammosini oldini olish uchun cookie faylni temp papkaga nusxalash.
+    Binary rejimda nusxalanadi — tab va line-ending o'zgarishining oldini olish uchun.
     """
     if not source_cookie_path:
         return None
     try:
         dest = Path(temp_dir) / f"{tag}_cookies.txt"
-        shutil.copy2(source_cookie_path, dest)
+        dest.write_bytes(source_cookie_path.read_bytes())
         return dest
     except Exception as e:
         logger.warning(f"Cookie faylni temp'ga nusxalashda xatolik ({tag}): {e}")
@@ -506,6 +507,8 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     else:
                         logger.warning(f"YouTube cookies tekshiruvi: {msg}. Auth xatolari bo'lishi mumkin.")
                     ydl_opts['cookiefile'] = str(youtube_cookies_path)
+                    # Bot aniqlashni yengillashtirish uchun: android client ko'pincha cookie bilan yaxshi ishlaydi
+                    ydl_opts.setdefault('extractor_args', {})['youtube'] = {'player_client': ['android', 'web']}
                 else:
                     logger.warning("YouTube cookies fayl topilmadi (YOUTUBE_COOKIES_FILE yoki cookies.txt)")
             
@@ -624,142 +627,159 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
 
                     if platform == 'youtube':
                         classified_error = _classify_youtube_error(error_msg)
+                        if classified_error == 'auth_required' and youtube_cookies_path:
+                            # Bir marta faqat "web" client bilan qayta urinish (ba'zida android dan farq qiladi)
+                            logger.info("YouTube: auth xatosi — web player_client bilan qayta urinilmoqda...")
+                            auth_retry_opts = ydl_opts.copy()
+                            auth_retry_opts['extractor_args'] = {'youtube': {'player_client': ['web']}}
+                            try:
+                                with yt_dlp.YoutubeDL(auth_retry_opts) as auth_ydl:
+                                    info = await asyncio.wait_for(
+                                        asyncio.to_thread(auth_ydl.extract_info, url, True),
+                                        timeout=300.0
+                                    )
+                                if info:
+                                    logger.info("YouTube web client bilan muvaffaqiyatli.")
+                                    classified_error = None
+                            except (asyncio.TimeoutError, yt_dlp.utils.DownloadError) as auth_retry_e:
+                                logger.debug(f"YouTube web client urinishi muvaffaqiyatsiz: {auth_retry_e}")
                         if classified_error == 'auth_required':
                             return {'error_type': classified_error, 'error_message': str(e)}
                     
-                    # Qayta urinish - oddiy format bilan
-                    logger.info("Oddiy format bilan qayta urinilmoqda...")
-                    # Retry uchun yangi ydl_opts yaratish (SSL sozlamalarini saqlab qolish)
-                    retry_ydl_opts = ydl_opts.copy()
-                    retry_ydl_opts['format'] = 'best[ext=mp4]/best'
-                    if platform == 'instagram':
-                        retry_ydl_opts['format'] = 'best'
-                    if platform == 'youtube':
-                        retry_ydl_opts['format'] = 'best/bestaudio'
-                        retry_ydl_opts.pop('extractor_args', None)
-                    
-                    # TikTok uchun retry'da ham normalize qilish
-                    if platform == 'tiktok':
-                        retry_url = await normalize_tiktok_url(url)
-                        if retry_url != url:
-                            logger.info(f"TikTok URL retry'da normalize qilindi: {retry_url}")
-                            url = retry_url
-                    
-                    # Yangi YDL instance yaratish va retry
-                    try:
-                        with yt_dlp.YoutubeDL(retry_ydl_opts) as retry_ydl:
-                            info = await asyncio.wait_for(
-                                asyncio.to_thread(retry_ydl.extract_info, url, True),
-                                timeout=300.0
-                            )
-                    except asyncio.TimeoutError:
-                        logger.error(f"Media yuklab olish timeout (retry): {url}")
-                        return None
-                    except yt_dlp.utils.DownloadError as retry_e:
-                        retry_error_msg = str(retry_e).lower()
-                        logger.error(f"Retry ham muvaffaqiyatsiz: {retry_e}")
-                        
-                        # TikTok uchun maxsus xatolik xabari
-                        if platform == 'tiktok':
-                            if 'ip address is blocked' in retry_error_msg or ('ip address' in retry_error_msg and 'blocked' in retry_error_msg):
-                                logger.warning("TikTok IP bloklangan (retry)")
-                            elif 'unsupported url' in retry_error_msg or 'explore' in retry_error_msg:
-                                logger.warning("TikTok link to'g'ri video emas yoki TikTok tomonidan bloklangan")
-
+                    # Qayta urinish - oddiy format bilan (auth_retry allaqachon info bergan bo'lsa o'tkazib yuborish)
+                    if not info:
+                        logger.info("Oddiy format bilan qayta urinilmoqda...")
+                        # Retry uchun yangi ydl_opts yaratish (SSL sozlamalarini saqlab qolish)
+                        retry_ydl_opts = ydl_opts.copy()
+                        retry_ydl_opts['format'] = 'best[ext=mp4]/best'
                         if platform == 'instagram':
-                            if 'no video formats found' in retry_error_msg:
-                                logger.info("Instagram meta fallback ishga tushirildi (retry)")
-                                fallback_data = await _instagram_meta_fallback(url, temp_dir, instagram_cookies_path)
-                                if fallback_data:
-                                    return fallback_data
-
-                            classified_error = _classify_instagram_error(retry_error_msg)
-                            if classified_error:
-                                return {'error_type': classified_error, 'error_message': str(retry_e)}
-
+                            retry_ydl_opts['format'] = 'best'
                         if platform == 'youtube':
-                            if 'requested format is not available' in retry_error_msg:
-                                logger.info("YouTube universal format fallback bilan qayta urinilmoqda...")
-                                fallback_ydl_opts = ydl_opts.copy()
-                                fallback_ydl_opts['format'] = '18/22/b'
-                                fallback_ydl_opts.pop('extractor_args', None)
-                                fallback_ydl_opts.pop('merge_output_format', None)
-                                try:
-                                    with yt_dlp.YoutubeDL(fallback_ydl_opts) as fallback_ydl:
-                                        info = await asyncio.wait_for(
-                                            asyncio.to_thread(fallback_ydl.extract_info, url, True),
-                                            timeout=300.0
-                                        )
-                                    if info:
-                                        logger.info("YouTube universal format fallback muvaffaqiyatli.")
-                                        retry_error_msg = ""
-                                except asyncio.TimeoutError:
-                                    logger.error(f"YouTube universal format fallback timeout: {url}")
-                                except yt_dlp.utils.DownloadError as fallback_e:
-                                    retry_error_msg = str(fallback_e).lower()
-                                    logger.error(f"YouTube universal format fallback xatosi: {fallback_e}")
+                            retry_ydl_opts['format'] = 'best/bestaudio'
+                            retry_ydl_opts.pop('extractor_args', None)
+                        
+                        # TikTok uchun retry'da ham normalize qilish
+                        if platform == 'tiktok':
+                            retry_url = await normalize_tiktok_url(url)
+                            if retry_url != url:
+                                logger.info(f"TikTok URL retry'da normalize qilindi: {retry_url}")
+                                url = retry_url
+                        
+                        # Yangi YDL instance yaratish va retry
+                        try:
+                            with yt_dlp.YoutubeDL(retry_ydl_opts) as retry_ydl:
+                                info = await asyncio.wait_for(
+                                    asyncio.to_thread(retry_ydl.extract_info, url, True),
+                                    timeout=300.0
+                                )
+                        except asyncio.TimeoutError:
+                            logger.error(f"Media yuklab olish timeout (retry): {url}")
+                            return None
+                        except yt_dlp.utils.DownloadError as retry_e:
+                            retry_error_msg = str(retry_e).lower()
+                            logger.error(f"Retry ham muvaffaqiyatsiz: {retry_e}")
+                            
+                            # TikTok uchun maxsus xatolik xabari
+                            if platform == 'tiktok':
+                                if 'ip address is blocked' in retry_error_msg or ('ip address' in retry_error_msg and 'blocked' in retry_error_msg):
+                                    logger.warning("TikTok IP bloklangan (retry)")
+                                elif 'unsupported url' in retry_error_msg or 'explore' in retry_error_msg:
+                                    logger.warning("TikTok link to'g'ri video emas yoki TikTok tomonidan bloklangan")
 
-                                # Agar 18/22/b ham mavjud bo'lmasa — FFmpeg merge (bv+ba) keyin format ro'yxatidan tanlash
-                                if not info and 'requested format is not available' in retry_error_msg:
-                                    logger.info("YouTube: bestvideo+bestaudio (FFmpeg merge) bilan urinilmoqda...")
-                                    merge_ydl_opts = ydl_opts.copy()
-                                    merge_ydl_opts['format'] = 'bestvideo+bestaudio'
-                                    merge_ydl_opts['merge_output_format'] = 'mp4'
-                                    merge_ydl_opts.pop('extractor_args', None)
+                            if platform == 'instagram':
+                                if 'no video formats found' in retry_error_msg:
+                                    logger.info("Instagram meta fallback ishga tushirildi (retry)")
+                                    fallback_data = await _instagram_meta_fallback(url, temp_dir, instagram_cookies_path)
+                                    if fallback_data:
+                                        return fallback_data
+
+                                classified_error = _classify_instagram_error(retry_error_msg)
+                                if classified_error:
+                                    return {'error_type': classified_error, 'error_message': str(retry_e)}
+
+                            if platform == 'youtube':
+                                if 'requested format is not available' in retry_error_msg:
+                                    logger.info("YouTube universal format fallback bilan qayta urinilmoqda...")
+                                    fallback_ydl_opts = ydl_opts.copy()
+                                    fallback_ydl_opts['format'] = '18/22/b'
+                                    fallback_ydl_opts.pop('extractor_args', None)
+                                    fallback_ydl_opts.pop('merge_output_format', None)
                                     try:
-                                        with yt_dlp.YoutubeDL(merge_ydl_opts) as merge_ydl:
+                                        with yt_dlp.YoutubeDL(fallback_ydl_opts) as fallback_ydl:
                                             info = await asyncio.wait_for(
-                                                asyncio.to_thread(merge_ydl.extract_info, url, True),
+                                                asyncio.to_thread(fallback_ydl.extract_info, url, True),
                                                 timeout=300.0
                                             )
                                         if info:
-                                            logger.info("YouTube bestvideo+bestaudio fallback muvaffaqiyatli.")
+                                            logger.info("YouTube universal format fallback muvaffaqiyatli.")
                                             retry_error_msg = ""
                                     except asyncio.TimeoutError:
-                                        logger.error(f"YouTube merge fallback timeout: {url}")
-                                    except yt_dlp.utils.DownloadError as merge_e:
-                                        logger.debug(f"YouTube merge fallback xatosi: {merge_e}")
+                                        logger.error(f"YouTube universal format fallback timeout: {url}")
+                                    except yt_dlp.utils.DownloadError as fallback_e:
+                                        retry_error_msg = str(fallback_e).lower()
+                                        logger.error(f"YouTube universal format fallback xatosi: {fallback_e}")
 
-                                # Oxirgi imkoniyat: mavjud formatlar ro'yxatidan tanlash
-                                if not info and 'requested format is not available' in retry_error_msg:
-                                    logger.info("YouTube: mavjud formatlar ro'yxatidan tanlash...")
-                                    list_ydl_opts = ydl_opts.copy()
-                                    list_ydl_opts.pop('format', None)
-                                    list_ydl_opts.pop('merge_output_format', None)
-                                    list_ydl_opts.pop('extractor_args', None)
-                                    try:
-                                        with yt_dlp.YoutubeDL(list_ydl_opts) as list_ydl:
-                                            list_info = await asyncio.wait_for(
-                                                asyncio.to_thread(list_ydl.extract_info, url, False),
-                                                timeout=60.0
-                                            )
-                                        fmt_str = _youtube_pick_format_from_list(list_info.get('formats') or []) if list_info else None
-                                        if fmt_str:
-                                            last_ydl_opts = ydl_opts.copy()
-                                            last_ydl_opts['format'] = fmt_str
-                                            last_ydl_opts['merge_output_format'] = 'mp4'
-                                            last_ydl_opts.pop('extractor_args', None)
-                                            with yt_dlp.YoutubeDL(last_ydl_opts) as last_ydl:
+                                    # Agar 18/22/b ham mavjud bo'lmasa — FFmpeg merge (bv+ba) keyin format ro'yxatidan tanlash
+                                    if not info and 'requested format is not available' in retry_error_msg:
+                                        logger.info("YouTube: bestvideo+bestaudio (FFmpeg merge) bilan urinilmoqda...")
+                                        merge_ydl_opts = ydl_opts.copy()
+                                        merge_ydl_opts['format'] = 'bestvideo+bestaudio'
+                                        merge_ydl_opts['merge_output_format'] = 'mp4'
+                                        merge_ydl_opts.pop('extractor_args', None)
+                                        try:
+                                            with yt_dlp.YoutubeDL(merge_ydl_opts) as merge_ydl:
                                                 info = await asyncio.wait_for(
-                                                    asyncio.to_thread(last_ydl.extract_info, url, True),
+                                                    asyncio.to_thread(merge_ydl.extract_info, url, True),
                                                     timeout=300.0
                                                 )
                                             if info:
-                                                logger.info("YouTube format ro'yxatidan tanlash muvaffaqiyatli.")
+                                                logger.info("YouTube bestvideo+bestaudio fallback muvaffaqiyatli.")
                                                 retry_error_msg = ""
-                                        else:
-                                            logger.warning("YouTube: mavjud format topilmadi (formats bo'sh).")
-                                    except asyncio.TimeoutError:
-                                        logger.error(f"YouTube format list timeout: {url}")
-                                    except yt_dlp.utils.DownloadError as list_e:
-                                        logger.error(f"YouTube format list xatosi: {list_e}")
+                                        except asyncio.TimeoutError:
+                                            logger.error(f"YouTube merge fallback timeout: {url}")
+                                        except yt_dlp.utils.DownloadError as merge_e:
+                                            logger.debug(f"YouTube merge fallback xatosi: {merge_e}")
 
-                            if info:
-                                pass
-                            else:
-                                classified_error = _classify_youtube_error(retry_error_msg)
-                                if classified_error:
-                                    return {'error_type': classified_error, 'error_message': str(retry_e)}
+                                    # Oxirgi imkoniyat: mavjud formatlar ro'yxatidan tanlash
+                                    if not info and 'requested format is not available' in retry_error_msg:
+                                        logger.info("YouTube: mavjud formatlar ro'yxatidan tanlash...")
+                                        list_ydl_opts = ydl_opts.copy()
+                                        list_ydl_opts.pop('format', None)
+                                        list_ydl_opts.pop('merge_output_format', None)
+                                        list_ydl_opts.pop('extractor_args', None)
+                                        try:
+                                            with yt_dlp.YoutubeDL(list_ydl_opts) as list_ydl:
+                                                list_info = await asyncio.wait_for(
+                                                    asyncio.to_thread(list_ydl.extract_info, url, False),
+                                                    timeout=60.0
+                                                )
+                                            fmt_str = _youtube_pick_format_from_list(list_info.get('formats') or []) if list_info else None
+                                            if fmt_str:
+                                                last_ydl_opts = ydl_opts.copy()
+                                                last_ydl_opts['format'] = fmt_str
+                                                last_ydl_opts['merge_output_format'] = 'mp4'
+                                                last_ydl_opts.pop('extractor_args', None)
+                                                with yt_dlp.YoutubeDL(last_ydl_opts) as last_ydl:
+                                                    info = await asyncio.wait_for(
+                                                        asyncio.to_thread(last_ydl.extract_info, url, True),
+                                                        timeout=300.0
+                                                    )
+                                                if info:
+                                                    logger.info("YouTube format ro'yxatidan tanlash muvaffaqiyatli.")
+                                                    retry_error_msg = ""
+                                            else:
+                                                logger.warning("YouTube: mavjud format topilmadi (formats bo'sh).")
+                                        except asyncio.TimeoutError:
+                                            logger.error(f"YouTube format list timeout: {url}")
+                                        except yt_dlp.utils.DownloadError as list_e:
+                                            logger.error(f"YouTube format list xatosi: {list_e}")
+
+                                if info:
+                                    pass
+                                else:
+                                    classified_error = _classify_youtube_error(retry_error_msg)
+                                    if classified_error:
+                                        return {'error_type': classified_error, 'error_message': str(retry_e)}
                         
                         return None
                 
