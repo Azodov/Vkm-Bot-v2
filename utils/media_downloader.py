@@ -9,6 +9,7 @@ from typing import Optional, Dict, Tuple
 from pathlib import Path
 import tempfile
 import shutil
+import os
 from urllib import request, parse
 import html
 from config import config
@@ -75,6 +76,40 @@ def _resolve_instagram_cookies_path() -> Optional[Path]:
     return None
 
 
+def _resolve_youtube_cookies_path() -> Optional[Path]:
+    """
+    YouTube cookies fayl yo'lini topish.
+
+    Priority:
+    1) YOUTUBE_COOKIES_FILE
+    2) Bot config'dagi youtube_cookies_file (agar mavjud bo'lsa)
+    3) INSTAGRAM_COOKIES_FILE (bitta umumiy cookies fayl ishlatilsa)
+    4) Project root ichidagi cookies.txt
+    5) /app/cookies.txt (docker image)
+    """
+    candidates = []
+
+    env_youtube = os.getenv("YOUTUBE_COOKIES_FILE")
+    if env_youtube:
+        candidates.append(Path(env_youtube))
+
+    cfg_youtube = getattr(config.bot, "youtube_cookies_file", None)
+    if cfg_youtube:
+        candidates.append(Path(cfg_youtube))
+
+    if config.bot.instagram_cookies_file:
+        candidates.append(Path(config.bot.instagram_cookies_file))
+
+    project_cookies = Path(__file__).resolve().parent.parent / "cookies.txt"
+    candidates.append(project_cookies)
+    candidates.append(Path("/app/cookies.txt"))
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _classify_instagram_error(error_text: str) -> Optional[str]:
     """
     Instagram xatoliklarini foydalanuvchiga tushunarli turlarga ajratish.
@@ -96,6 +131,28 @@ def _classify_instagram_error(error_text: str) -> Optional[str]:
 
     if "story" in error_text and ("not available" in error_text or "not found" in error_text):
         return "story_unavailable"
+
+    return None
+
+
+def _classify_youtube_error(error_text: str) -> Optional[str]:
+    """
+    YouTube xatoliklarini foydalanuvchiga tushunarli turlarga ajratish.
+    """
+    error_text = error_text.lower()
+
+    auth_markers = (
+        "sign in to confirm you’re not a bot",
+        "sign in to confirm you're not a bot",
+        "use --cookies-from-browser",
+        "use --cookies",
+        "login required",
+        "this video is private",
+        "http error 403",
+        "forbidden",
+    )
+    if any(marker in error_text for marker in auth_markers):
+        return "auth_required"
 
     return None
 
@@ -351,6 +408,13 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         'player_client': ['android_sdkless', 'web'],
                     }
                 }
+
+                cookies_path = _resolve_youtube_cookies_path()
+                if cookies_path:
+                    ydl_opts['cookiefile'] = str(cookies_path)
+                    logger.info(f"YouTube cookies ishlatilmoqda: {cookies_path}")
+                else:
+                    logger.warning("YouTube cookies fayl topilmadi (YOUTUBE_COOKIES_FILE yoki cookies.txt)")
             
             # TikTok uchun maxsus sozlamalar
             if platform == 'tiktok':
@@ -462,6 +526,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         classified_error = _classify_instagram_error(error_msg)
                         if classified_error:
                             return {'error_type': classified_error, 'error_message': str(e)}
+
+                    if platform == 'youtube':
+                        classified_error = _classify_youtube_error(error_msg)
+                        if classified_error:
+                            return {'error_type': classified_error, 'error_message': str(e)}
                     
                     # Qayta urinish - oddiy format bilan
                     logger.info("Oddiy format bilan qayta urinilmoqda...")
@@ -507,6 +576,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                                     return fallback_data
 
                             classified_error = _classify_instagram_error(retry_error_msg)
+                            if classified_error:
+                                return {'error_type': classified_error, 'error_message': str(retry_e)}
+
+                        if platform == 'youtube':
+                            classified_error = _classify_youtube_error(retry_error_msg)
                             if classified_error:
                                 return {'error_type': classified_error, 'error_message': str(retry_e)}
                         
@@ -574,11 +648,17 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                             'noplaylist': True,
                         }
                         
-                        # Instagram uchun cookies va SSL sozlamalari
-                        if platform == 'instagram':
-                            cookies_path = _resolve_instagram_cookies_path()
+                        # Instagram/YouTube uchun cookies
+                        if platform in ('instagram', 'youtube'):
+                            if platform == 'instagram':
+                                cookies_path = _resolve_instagram_cookies_path()
+                            else:
+                                cookies_path = _resolve_youtube_cookies_path()
                             if cookies_path:
                                 audio_ydl_opts['cookiefile'] = str(cookies_path)
+
+                        # Instagram uchun SSL sozlamalari
+                        if platform == 'instagram':
                             audio_ydl_opts['no_check_certificate'] = True
                         
                         with yt_dlp.YoutubeDL(audio_ydl_opts) as audio_ydl:

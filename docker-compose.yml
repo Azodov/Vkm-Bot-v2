@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - ./cookies.txt:/app/cookies.txt:ro
     # agar loglarni kichraytirish kerak bo'lsa:
     logging:
       options:
