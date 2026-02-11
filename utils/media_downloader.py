@@ -9,6 +9,8 @@ from typing import Optional, Dict, Tuple
 from pathlib import Path
 import tempfile
 import shutil
+from urllib import request, parse
+import html
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,127 @@ def _classify_instagram_error(error_text: str) -> Optional[str]:
         return "story_unavailable"
 
     return None
+
+
+def _cookies_header_from_file(cookies_path: Optional[Path]) -> str:
+    """
+    Netscape cookie file'dan Cookie header tayyorlash.
+    """
+    if not cookies_path or not cookies_path.exists():
+        return ""
+
+    pairs = []
+    try:
+        for line in cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            domain, _, _, _, _, name, value = parts[:7]
+            if "instagram.com" not in domain:
+                continue
+            if name and value:
+                pairs.append(f"{name}={value}")
+    except Exception as e:
+        logger.warning(f"Cookie header yaratishda xatolik: {e}")
+        return ""
+
+    return "; ".join(pairs)
+
+
+def _download_url_to_file(file_url: str, output_path: Path, cookie_header: str = "") -> bool:
+    """
+    URL'dan fayl yuklab olish (urllib).
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.instagram.com/",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    req = request.Request(file_url, headers=headers)
+    with request.urlopen(req, timeout=45) as resp:
+        data = resp.read()
+        if not data:
+            return False
+        output_path.write_bytes(data)
+    return output_path.exists() and output_path.stat().st_size > 0
+
+
+def _extract_instagram_meta_media(html_text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Instagram HTML'dan media URL va title ni olish.
+    Returns:
+        media_url, media_type(video|photo), title
+    """
+    video_match = re.search(r'<meta[^>]+property=["\']og:video["\'][^>]+content=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
+    image_match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
+    title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
+
+    title = html.unescape(title_match.group(1)) if title_match else "Instagram"
+
+    if video_match:
+        return html.unescape(video_match.group(1)), "video", title
+    if image_match:
+        return html.unescape(image_match.group(1)), "photo", title
+    return None, None, title
+
+
+async def _instagram_meta_fallback(url: str, temp_dir: str, cookies_path: Optional[Path]) -> Optional[Dict]:
+    """
+    yt-dlp format topa olmaganda Instagram sahifasidan og:video/og:image orqali fallback.
+    """
+    try:
+        cookie_header = _cookies_header_from_file(cookies_path)
+
+        def _fetch_page() -> str:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.instagram.com/",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            req = request.Request(url, headers=headers)
+            with request.urlopen(req, timeout=45) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+
+        page_html = await asyncio.to_thread(_fetch_page)
+        media_url, media_type, title = _extract_instagram_meta_media(page_html)
+
+        if not media_url or not media_type:
+            return None
+
+        parsed = parse.urlparse(media_url)
+        ext = Path(parsed.path).suffix.lower()
+        if media_type == "video":
+            if ext not in (".mp4", ".webm", ".mov"):
+                ext = ".mp4"
+            filename = f"instagram_fallback{ext}"
+        else:
+            if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+                ext = ".jpg"
+            filename = f"instagram_fallback{ext}"
+
+        media_path = Path(temp_dir) / filename
+        ok = await asyncio.to_thread(_download_url_to_file, media_url, media_path, cookie_header)
+        if not ok:
+            return None
+
+        return {
+            'file_path': str(media_path),
+            'title': title or 'Instagram',
+            'duration': None,
+            'thumbnail_path': None,
+            'platform': 'instagram',
+            'audio_path': None,
+        }
+    except Exception as e:
+        logger.warning(f"Instagram meta fallback muvaffaqiyatsiz: {e}")
+        return None
 
 
 def detect_platform(url: str) -> Optional[str]:
@@ -330,6 +453,12 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                             return None
 
                     if platform == 'instagram':
+                        if 'no video formats found' in error_msg:
+                            logger.info("Instagram meta fallback ishga tushirildi (primary)")
+                            fallback_data = await _instagram_meta_fallback(url, temp_dir, cookies_path)
+                            if fallback_data:
+                                return fallback_data
+
                         classified_error = _classify_instagram_error(error_msg)
                         if classified_error:
                             return {'error_type': classified_error, 'error_message': str(e)}
@@ -371,6 +500,12 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                                 logger.warning("TikTok link to'g'ri video emas yoki TikTok tomonidan bloklangan")
 
                         if platform == 'instagram':
+                            if 'no video formats found' in retry_error_msg:
+                                logger.info("Instagram meta fallback ishga tushirildi (retry)")
+                                fallback_data = await _instagram_meta_fallback(url, temp_dir, cookies_path)
+                                if fallback_data:
+                                    return fallback_data
+
                             classified_error = _classify_instagram_error(retry_error_msg)
                             if classified_error:
                                 return {'error_type': classified_error, 'error_message': str(retry_e)}
