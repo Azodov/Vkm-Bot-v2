@@ -368,6 +368,35 @@ async def normalize_tiktok_url(url: str) -> str:
     return url
 
 
+def _youtube_pick_format_from_list(formats: list) -> Optional[str]:
+    """
+    YouTube info['formats'] ro'yxatidan yuklab olish uchun format selector qurish.
+    Birgalikda (video+audio) formatlar ustun, keyin video+audio id lar birlashtiriladi.
+    """
+    if not formats:
+        return None
+    # Birgalikda formatlar (bitta faylda video+audio)
+    combined = [
+        f for f in formats
+        if f.get('vcodec') and f.get('vcodec') != 'none'
+        and f.get('acodec') and f.get('acodec') != 'none'
+    ]
+    if combined:
+        combined.sort(key=lambda x: (x.get('height') or 0, x.get('tbr') or 0), reverse=True)
+        return '/'.join(f['format_id'] for f in combined)
+    # Alohida video va audio — eng yaxshi video + eng yaxshi audio
+    videos = [f for f in formats if f.get('vcodec') and f.get('vcodec') != 'none' and (not f.get('acodec') or f.get('acodec') == 'none')]
+    audios = [f for f in formats if f.get('acodec') and f.get('acodec') != 'none']
+    if videos and audios:
+        videos.sort(key=lambda x: (x.get('height') or 0, x.get('tbr') or 0), reverse=True)
+        audios.sort(key=lambda x: (x.get('tbr') or 0, x.get('abr') or 0), reverse=True)
+        return f"{videos[0]['format_id']}+{audios[0]['format_id']}"
+    # Faqat audio yoki faqat video
+    if formats:
+        return '/'.join(f.get('format_id') for f in formats if f.get('format_id'))
+    return None
+
+
 async def download_media(url: str, platform: str) -> Optional[Dict]:
     """
     Media yuklab olish (yt-dlp yoki boshqa tool orqali)
@@ -624,26 +653,60 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                                     retry_error_msg = str(fallback_e).lower()
                                     logger.error(f"YouTube universal format fallback xatosi: {fallback_e}")
 
-                                # Agar 18/22/b ham mavjud bo'lmasa — format cheklovsiz "best" bilan oxirgi urinish
+                                # Agar 18/22/b ham mavjud bo'lmasa — FFmpeg merge (bv+ba) keyin format ro'yxatidan tanlash
                                 if not info and 'requested format is not available' in retry_error_msg:
-                                    logger.info("YouTube: format cheklovsiz (best) bilan oxirgi urinish...")
-                                    last_ydl_opts = ydl_opts.copy()
-                                    last_ydl_opts['format'] = 'best'
-                                    last_ydl_opts.pop('extractor_args', None)
-                                    last_ydl_opts.pop('merge_output_format', None)
+                                    logger.info("YouTube: bestvideo+bestaudio (FFmpeg merge) bilan urinilmoqda...")
+                                    merge_ydl_opts = ydl_opts.copy()
+                                    merge_ydl_opts['format'] = 'bestvideo+bestaudio'
+                                    merge_ydl_opts['merge_output_format'] = 'mp4'
+                                    merge_ydl_opts.pop('extractor_args', None)
                                     try:
-                                        with yt_dlp.YoutubeDL(last_ydl_opts) as last_ydl:
+                                        with yt_dlp.YoutubeDL(merge_ydl_opts) as merge_ydl:
                                             info = await asyncio.wait_for(
-                                                asyncio.to_thread(last_ydl.extract_info, url, True),
+                                                asyncio.to_thread(merge_ydl.extract_info, url, True),
                                                 timeout=300.0
                                             )
                                         if info:
-                                            logger.info("YouTube format cheklovsiz fallback muvaffaqiyatli.")
+                                            logger.info("YouTube bestvideo+bestaudio fallback muvaffaqiyatli.")
                                             retry_error_msg = ""
                                     except asyncio.TimeoutError:
-                                        logger.error(f"YouTube oxirgi fallback timeout: {url}")
-                                    except yt_dlp.utils.DownloadError as last_e:
-                                        logger.error(f"YouTube oxirgi fallback xatosi: {last_e}")
+                                        logger.error(f"YouTube merge fallback timeout: {url}")
+                                    except yt_dlp.utils.DownloadError as merge_e:
+                                        logger.debug(f"YouTube merge fallback xatosi: {merge_e}")
+
+                                # Oxirgi imkoniyat: mavjud formatlar ro'yxatidan tanlash
+                                if not info and 'requested format is not available' in retry_error_msg:
+                                    logger.info("YouTube: mavjud formatlar ro'yxatidan tanlash...")
+                                    list_ydl_opts = ydl_opts.copy()
+                                    list_ydl_opts.pop('format', None)
+                                    list_ydl_opts.pop('merge_output_format', None)
+                                    list_ydl_opts.pop('extractor_args', None)
+                                    try:
+                                        with yt_dlp.YoutubeDL(list_ydl_opts) as list_ydl:
+                                            list_info = await asyncio.wait_for(
+                                                asyncio.to_thread(list_ydl.extract_info, url, False),
+                                                timeout=60.0
+                                            )
+                                        fmt_str = _youtube_pick_format_from_list(list_info.get('formats') or []) if list_info else None
+                                        if fmt_str:
+                                            last_ydl_opts = ydl_opts.copy()
+                                            last_ydl_opts['format'] = fmt_str
+                                            last_ydl_opts['merge_output_format'] = 'mp4'
+                                            last_ydl_opts.pop('extractor_args', None)
+                                            with yt_dlp.YoutubeDL(last_ydl_opts) as last_ydl:
+                                                info = await asyncio.wait_for(
+                                                    asyncio.to_thread(last_ydl.extract_info, url, True),
+                                                    timeout=300.0
+                                                )
+                                            if info:
+                                                logger.info("YouTube format ro'yxatidan tanlash muvaffaqiyatli.")
+                                                retry_error_msg = ""
+                                        else:
+                                            logger.warning("YouTube: mavjud format topilmadi (formats bo'sh).")
+                                    except asyncio.TimeoutError:
+                                        logger.error(f"YouTube format list timeout: {url}")
+                                    except yt_dlp.utils.DownloadError as list_e:
+                                        logger.error(f"YouTube format list xatosi: {list_e}")
 
                             if info:
                                 pass
