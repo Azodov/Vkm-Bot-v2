@@ -110,6 +110,21 @@ def _resolve_youtube_cookies_path() -> Optional[Path]:
     return None
 
 
+def _prepare_cookiefile_for_ydl(source_cookie_path: Optional[Path], temp_dir: str, tag: str) -> Optional[Path]:
+    """
+    Read-only cookiefile muammosini oldini olish uchun cookie faylni temp papkaga nusxalash.
+    """
+    if not source_cookie_path:
+        return None
+    try:
+        dest = Path(temp_dir) / f"{tag}_cookies.txt"
+        shutil.copy2(source_cookie_path, dest)
+        return dest
+    except Exception as e:
+        logger.warning(f"Cookie faylni temp'ga nusxalashda xatolik ({tag}): {e}")
+        return None
+
+
 def _classify_instagram_error(error_text: str) -> Optional[str]:
     """
     Instagram xatoliklarini foydalanuvchiga tushunarli turlarga ajratish.
@@ -383,6 +398,9 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                 'extract_flat': False,
                 'noplaylist': True,  # Playlist emas, faqat video
             }
+
+            instagram_cookies_path = None
+            youtube_cookies_path = None
             
             # Video uchun thumbnail ham olish
             if platform in ('youtube', 'tiktok'):
@@ -400,6 +418,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             
             # YouTube uchun maxsus sozlamalar
             if platform == 'youtube':
+                # YouTube'da ko'p videolar alohida video+audio stream bo'ladi.
+                # Shuning uchun birlashtirilgan fallback bilan ishlaymiz.
+                ydl_opts['format'] = 'bestvideo*+bestaudio/best'
+                ydl_opts['merge_output_format'] = 'mp4'
+
                 # YouTube extractor args - yanada yaxshi extraction uchun
                 # yt-dlp'ning tavsiya etilgan sozlamalari
                 ydl_opts['extractor_args'] = {
@@ -409,10 +432,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     }
                 }
 
-                cookies_path = _resolve_youtube_cookies_path()
-                if cookies_path:
-                    ydl_opts['cookiefile'] = str(cookies_path)
-                    logger.info(f"YouTube cookies ishlatilmoqda: {cookies_path}")
+                source_cookies_path = _resolve_youtube_cookies_path()
+                youtube_cookies_path = _prepare_cookiefile_for_ydl(source_cookies_path, temp_dir, "youtube")
+                if youtube_cookies_path:
+                    ydl_opts['cookiefile'] = str(youtube_cookies_path)
+                    logger.info(f"YouTube cookies ishlatilmoqda: {source_cookies_path}")
                 else:
                     logger.warning("YouTube cookies fayl topilmadi (YOUTUBE_COOKIES_FILE yoki cookies.txt)")
             
@@ -442,10 +466,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                 ydl_opts['format'] = 'best'
 
                 # Instagram uchun cookies qo'shish (agar mavjud bo'lsa)
-                cookies_path = _resolve_instagram_cookies_path()
-                if cookies_path:
-                    ydl_opts['cookiefile'] = str(cookies_path)
-                    logger.info(f"Instagram cookies ishlatilmoqda: {cookies_path}")
+                source_cookies_path = _resolve_instagram_cookies_path()
+                instagram_cookies_path = _prepare_cookiefile_for_ydl(source_cookies_path, temp_dir, "instagram")
+                if instagram_cookies_path:
+                    ydl_opts['cookiefile'] = str(instagram_cookies_path)
+                    logger.info(f"Instagram cookies ishlatilmoqda: {source_cookies_path}")
                 else:
                     logger.warning("Instagram cookies fayl topilmadi (INSTAGRAM_COOKIES_FILE yoki cookies.txt)")
                 
@@ -519,7 +544,7 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     if platform == 'instagram':
                         if 'no video formats found' in error_msg:
                             logger.info("Instagram meta fallback ishga tushirildi (primary)")
-                            fallback_data = await _instagram_meta_fallback(url, temp_dir, cookies_path)
+                            fallback_data = await _instagram_meta_fallback(url, temp_dir, instagram_cookies_path)
                             if fallback_data:
                                 return fallback_data
 
@@ -539,6 +564,8 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     retry_ydl_opts['format'] = 'best[ext=mp4]/best'
                     if platform == 'instagram':
                         retry_ydl_opts['format'] = 'best'
+                    if platform == 'youtube':
+                        retry_ydl_opts['format'] = 'bestvideo+bestaudio/best'
                     
                     # TikTok uchun retry'da ham normalize qilish
                     if platform == 'tiktok':
@@ -571,7 +598,7 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         if platform == 'instagram':
                             if 'no video formats found' in retry_error_msg:
                                 logger.info("Instagram meta fallback ishga tushirildi (retry)")
-                                fallback_data = await _instagram_meta_fallback(url, temp_dir, cookies_path)
+                                fallback_data = await _instagram_meta_fallback(url, temp_dir, instagram_cookies_path)
                                 if fallback_data:
                                     return fallback_data
 
@@ -651,9 +678,9 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         # Instagram/YouTube uchun cookies
                         if platform in ('instagram', 'youtube'):
                             if platform == 'instagram':
-                                cookies_path = _resolve_instagram_cookies_path()
+                                cookies_path = instagram_cookies_path
                             else:
-                                cookies_path = _resolve_youtube_cookies_path()
+                                cookies_path = youtube_cookies_path
                             if cookies_path:
                                 audio_ydl_opts['cookiefile'] = str(cookies_path)
 
