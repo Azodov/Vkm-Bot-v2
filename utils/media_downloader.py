@@ -423,17 +423,8 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             if platform == 'youtube':
                 # YouTube formatlari video va audio streamlarga bo'linib keladi.
                 # Maksimal moslik uchun bir nechta fallback beramiz.
-                ydl_opts['format'] = 'bestvideo+bestaudio/bestvideo*+bestaudio/best/bestaudio'
+                ydl_opts['format'] = 'bv*+ba/b/bestaudio'
                 ydl_opts['merge_output_format'] = 'mp4'
-
-                # YouTube extractor args - yanada yaxshi extraction uchun
-                # yt-dlp'ning tavsiya etilgan sozlamalari
-                ydl_opts['extractor_args'] = {
-                    'youtube': {
-                        # Android va web client - eng yaxshi formatlar uchun
-                        'player_client': ['android_sdkless', 'web'],
-                    }
-                }
 
                 source_cookies_path = _resolve_youtube_cookies_path()
                 youtube_cookies_path = _prepare_cookiefile_for_ydl(source_cookies_path, temp_dir, "youtube")
@@ -503,6 +494,7 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                 # Media ma'lumotlarini olish
                 # download=True - faylni yuklab olish
                 # Timeout sozlamalari
+                info = None
                 try:
                     # Timeout: 5 daqiqa (300 sekund)
                     info = await asyncio.wait_for(
@@ -557,7 +549,7 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
 
                     if platform == 'youtube':
                         classified_error = _classify_youtube_error(error_msg)
-                        if classified_error:
+                        if classified_error == 'auth_required':
                             return {'error_type': classified_error, 'error_message': str(e)}
                     
                     # Qayta urinish - oddiy format bilan
@@ -611,9 +603,34 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                                 return {'error_type': classified_error, 'error_message': str(retry_e)}
 
                         if platform == 'youtube':
-                            classified_error = _classify_youtube_error(retry_error_msg)
-                            if classified_error:
-                                return {'error_type': classified_error, 'error_message': str(retry_e)}
+                            if 'requested format is not available' in retry_error_msg:
+                                logger.info("YouTube universal format fallback bilan qayta urinilmoqda...")
+                                fallback_ydl_opts = ydl_opts.copy()
+                                fallback_ydl_opts['format'] = '18/22/b'
+                                fallback_ydl_opts.pop('extractor_args', None)
+                                fallback_ydl_opts.pop('merge_output_format', None)
+                                try:
+                                    with yt_dlp.YoutubeDL(fallback_ydl_opts) as fallback_ydl:
+                                        info = await asyncio.wait_for(
+                                            asyncio.to_thread(fallback_ydl.extract_info, url, True),
+                                            timeout=300.0
+                                        )
+                                    if info:
+                                        logger.info("YouTube universal format fallback muvaffaqiyatli.")
+                                        # Retry exception'idan chiqib, oddiy flow davom etadi
+                                        retry_error_msg = ""
+                                except asyncio.TimeoutError:
+                                    logger.error(f"YouTube universal format fallback timeout: {url}")
+                                except yt_dlp.utils.DownloadError as fallback_e:
+                                    retry_error_msg = str(fallback_e).lower()
+                                    logger.error(f"YouTube universal format fallback xatosi: {fallback_e}")
+
+                            if info:
+                                pass
+                            else:
+                                classified_error = _classify_youtube_error(retry_error_msg)
+                                if classified_error:
+                                    return {'error_type': classified_error, 'error_message': str(retry_e)}
                         
                         return None
                 
