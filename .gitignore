@@ -37,9 +37,9 @@ venv.bak/
 #.env.*.local
 
 # Cookies files (xavfsizlik uchun)
-cookies.txt
-*.cookies
-instagram_cookies.txt
+#cookies.txt
+#*.cookies
+#instagram_cookies.txt
 #*.env
 
 # IDE
