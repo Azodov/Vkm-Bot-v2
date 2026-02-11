@@ -1064,16 +1064,26 @@ async def download_and_send_media(message: Message, url: str, platform: str, loa
                         "2. Cookies faylini yangilang\n"
                         "3. Post yoki Reel link bilan urinib ko'ring"
                     )
-            elif platform == 'youtube' and error_type == 'auth_required':
-                await loading_msg.edit_text(
-                    "❌ YouTube media yuklab olinmadi.\n\n"
-                    "⚠️ Sabab: YouTube qo'shimcha tekshiruv (anti-bot) so'radi.\n\n"
-                    "🔧 Yechimlar:\n"
-                    "1. YouTube cookies faylini yangilang (Netscape format)\n"
-                    "2. Serverda `YOUTUBE_COOKIES_FILE=/app/cookies.txt` ni sozlang\n"
-                    "3. 5-10 daqiqadan keyin qayta urinib ko'ring\n\n"
-                    "💡 Eslatma: cookies ichida `.youtube.com` yoki `.google.com` sessiya cookie'lari bo'lishi kerak."
-                )
+            elif platform == 'youtube' and error_type in ('auth_required', 'format_unavailable'):
+                if error_type == 'auth_required':
+                    await loading_msg.edit_text(
+                        "❌ YouTube media yuklab olinmadi.\n\n"
+                        "⚠️ Sabab: YouTube qo'shimcha tekshiruv (anti-bot) so'radi.\n\n"
+                        "🔧 Yechimlar:\n"
+                        "1. YouTube cookies faylini yangilang (Netscape format)\n"
+                        "2. Serverda `YOUTUBE_COOKIES_FILE=/app/cookies.txt` ni sozlang\n"
+                        "3. 5-10 daqiqadan keyin qayta urinib ko'ring\n\n"
+                        "💡 Eslatma: cookies ichida `.youtube.com` yoki `.google.com` sessiya cookie'lari bo'lishi kerak."
+                    )
+                else:
+                    await loading_msg.edit_text(
+                        "❌ YouTube media formatlari topilmadi.\n\n"
+                        "⚠️ Bu video uchun mos streamlar vaqtincha olinmadi.\n\n"
+                        "🔧 Yechimlar:\n"
+                        "1. Linkni qayta yuborib ko'ring\n"
+                        "2. Boshqa videoni sinab ko'ring\n"
+                        "3. 2-3 daqiqadan keyin qayta urinib ko'ring"
+                    )
             else:
                 # Boshqa platformalar uchun umumiy xabar
                 await loading_msg.edit_text(

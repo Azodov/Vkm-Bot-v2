@@ -169,6 +169,9 @@ def _classify_youtube_error(error_text: str) -> Optional[str]:
     if any(marker in error_text for marker in auth_markers):
         return "auth_required"
 
+    if "requested format is not available" in error_text:
+        return "format_unavailable"
+
     return None
 
 
@@ -418,9 +421,9 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             
             # YouTube uchun maxsus sozlamalar
             if platform == 'youtube':
-                # YouTube'da ko'p videolar alohida video+audio stream bo'ladi.
-                # Shuning uchun birlashtirilgan fallback bilan ishlaymiz.
-                ydl_opts['format'] = 'bestvideo*+bestaudio/best'
+                # YouTube formatlari video va audio streamlarga bo'linib keladi.
+                # Maksimal moslik uchun bir nechta fallback beramiz.
+                ydl_opts['format'] = 'bestvideo+bestaudio/bestvideo*+bestaudio/best/bestaudio'
                 ydl_opts['merge_output_format'] = 'mp4'
 
                 # YouTube extractor args - yanada yaxshi extraction uchun
@@ -565,7 +568,8 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     if platform == 'instagram':
                         retry_ydl_opts['format'] = 'best'
                     if platform == 'youtube':
-                        retry_ydl_opts['format'] = 'bestvideo+bestaudio/best'
+                        retry_ydl_opts['format'] = 'best/bestaudio'
+                        retry_ydl_opts.pop('extractor_args', None)
                     
                     # TikTok uchun retry'da ham normalize qilish
                     if platform == 'tiktok':
