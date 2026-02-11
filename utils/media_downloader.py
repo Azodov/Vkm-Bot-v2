@@ -50,6 +50,54 @@ PLATFORM_PATTERNS = {
 }
 
 
+def _resolve_instagram_cookies_path() -> Optional[Path]:
+    """
+    Instagram cookies fayl yo'lini topish.
+
+    Priority:
+    1) INSTAGRAM_COOKIES_FILE
+    2) Project root ichidagi cookies.txt
+    3) /app/cookies.txt (docker image)
+    """
+    candidates = []
+    if config.bot.instagram_cookies_file:
+        candidates.append(Path(config.bot.instagram_cookies_file))
+
+    project_cookies = Path(__file__).resolve().parent.parent / "cookies.txt"
+    candidates.append(project_cookies)
+    candidates.append(Path("/app/cookies.txt"))
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _classify_instagram_error(error_text: str) -> Optional[str]:
+    """
+    Instagram xatoliklarini foydalanuvchiga tushunarli turlarga ajratish.
+    """
+    error_text = error_text.lower()
+
+    auth_markers = (
+        "login required",
+        "rate-limit",
+        "requested content is not available",
+        "use --cookies",
+        "private",
+        "forbidden",
+        "http error 403",
+        "unauthorized",
+    )
+    if any(marker in error_text for marker in auth_markers):
+        return "auth_required"
+
+    if "story" in error_text and ("not available" in error_text or "not found" in error_text):
+        return "story_unavailable"
+
+    return None
+
+
 def detect_platform(url: str) -> Optional[str]:
     """
     URL dan platformani aniqlash
@@ -203,13 +251,12 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             # Instagram uchun maxsus sozlamalar
             if platform == 'instagram':
                 # Instagram uchun cookies qo'shish (agar mavjud bo'lsa)
-                if config.bot.instagram_cookies_file:
-                    cookies_path = Path(config.bot.instagram_cookies_file)
-                    if cookies_path.exists():
-                        ydl_opts['cookiefile'] = str(cookies_path)
-                        logger.info(f"Instagram cookies ishlatilmoqda: {cookies_path}")
-                    else:
-                        logger.warning(f"Instagram cookies fayl topilmadi: {cookies_path}")
+                cookies_path = _resolve_instagram_cookies_path()
+                if cookies_path:
+                    ydl_opts['cookiefile'] = str(cookies_path)
+                    logger.info(f"Instagram cookies ishlatilmoqda: {cookies_path}")
+                else:
+                    logger.warning("Instagram cookies fayl topilmadi (INSTAGRAM_COOKIES_FILE yoki cookies.txt)")
                 
                 # Instagram uchun qo'shimcha sozlamalar
                 ydl_opts.update({
@@ -277,6 +324,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         if 'connection' in error_msg or 'ssl' in error_msg or 'certificate' in error_msg:
                             logger.warning("Instagram story yuklab olishda tarmoq xatosi - Instagram tomonidan bloklangan bo'lishi mumkin")
                             return None
+
+                    if platform == 'instagram':
+                        classified_error = _classify_instagram_error(error_msg)
+                        if classified_error:
+                            return {'error_type': classified_error, 'error_message': str(e)}
                     
                     # Qayta urinish - oddiy format bilan
                     logger.info("Oddiy format bilan qayta urinilmoqda...")
@@ -311,6 +363,11 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                                 logger.warning("TikTok IP bloklangan (retry)")
                             elif 'unsupported url' in retry_error_msg or 'explore' in retry_error_msg:
                                 logger.warning("TikTok link to'g'ri video emas yoki TikTok tomonidan bloklangan")
+
+                        if platform == 'instagram':
+                            classified_error = _classify_instagram_error(retry_error_msg)
+                            if classified_error:
+                                return {'error_type': classified_error, 'error_message': str(retry_e)}
                         
                         return None
                 
@@ -374,10 +431,9 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                         
                         # Instagram uchun cookies va SSL sozlamalari
                         if platform == 'instagram':
-                            if config.bot.instagram_cookies_file:
-                                cookies_path = Path(config.bot.instagram_cookies_file)
-                                if cookies_path.exists():
-                                    audio_ydl_opts['cookiefile'] = str(cookies_path)
+                            cookies_path = _resolve_instagram_cookies_path()
+                            if cookies_path:
+                                audio_ydl_opts['cookiefile'] = str(cookies_path)
                             audio_ydl_opts['no_check_certificate'] = True
                         
                         with yt_dlp.YoutubeDL(audio_ydl_opts) as audio_ydl:

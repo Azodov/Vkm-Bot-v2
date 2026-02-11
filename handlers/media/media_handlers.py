@@ -1044,6 +1044,26 @@ async def download_and_send_media(message: Message, url: str, platform: str, loa
                     f"yuklab bo'lmaydi. To'liq video linkini yuborishni tavsiya qilamiz.\n\n"
                     f"🔄 Qayta urinib ko'ring yoki boshqa link yuboring."
                 )
+            elif platform == 'instagram' and error_type in ('auth_required', 'story_unavailable'):
+                if error_type == 'auth_required':
+                    await loading_msg.edit_text(
+                        "❌ Instagram media yuklab olinmadi.\n\n"
+                        "⚠️ Sabab: Instagram login yoki cookies talab qilyapti (yoki rate-limit).\n\n"
+                        "🔧 Yechimlar:\n"
+                        "1. Serverda `INSTAGRAM_COOKIES_FILE` ni sozlang\n"
+                        "2. Cookies faylini yangilang (Netscape format)\n"
+                        "3. 5-10 daqiqadan keyin qayta urinib ko'ring\n\n"
+                        "💡 Misol: `INSTAGRAM_COOKIES_FILE=/app/cookies.txt`"
+                    )
+                else:
+                    await loading_msg.edit_text(
+                        "❌ Instagram Story yuklab olinmadi.\n\n"
+                        "⚠️ Story vaqtincha mavjud emas yoki muddati tugagan bo'lishi mumkin.\n\n"
+                        "🔧 Yechimlar:\n"
+                        "1. Yangi story link yuboring\n"
+                        "2. Cookies faylini yangilang\n"
+                        "3. Post yoki Reel link bilan urinib ko'ring"
+                    )
             else:
                 # Boshqa platformalar uchun umumiy xabar
                 await loading_msg.edit_text(
