@@ -205,7 +205,7 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             }
             
             # Video uchun thumbnail ham olish
-            if platform in ('youtube', 'instagram', 'tiktok'):
+            if platform in ('youtube', 'tiktok'):
                 ydl_opts['writethumbnail'] = True
                 ydl_opts['writesubtitles'] = False  # Subtitlarni o'chirish
                 ydl_opts['writeautomaticsub'] = False
@@ -250,6 +250,10 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
             
             # Instagram uchun maxsus sozlamalar
             if platform == 'instagram':
+                # Instagram post/reel/story turiga qarab media video yoki rasm bo'lishi mumkin.
+                # "best" rasm postlar uchun ham format topishga yordam beradi.
+                ydl_opts['format'] = 'best'
+
                 # Instagram uchun cookies qo'shish (agar mavjud bo'lsa)
                 cookies_path = _resolve_instagram_cookies_path()
                 if cookies_path:
@@ -335,6 +339,8 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                     # Retry uchun yangi ydl_opts yaratish (SSL sozlamalarini saqlab qolish)
                     retry_ydl_opts = ydl_opts.copy()
                     retry_ydl_opts['format'] = 'best[ext=mp4]/best'
+                    if platform == 'instagram':
+                        retry_ydl_opts['format'] = 'best'
                     
                     # TikTok uchun retry'da ham normalize qilish
                     if platform == 'tiktok':
@@ -377,11 +383,15 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                 # Download qilingan fayl topish (thumbnail va subtitlarni olib tashlash)
                 all_files = list(Path(temp_dir).glob('*'))
                 # Thumbnail, subtitl va boshqa yordamchi fayllarni olib tashlash
+                excluded_suffixes = {'.vtt', '.srt', '.ass', '.description'}
+                if platform != 'instagram':
+                    excluded_suffixes.update({'.jpg', '.webp', '.png', '.jpeg'})
+
                 media_files = [
                     f for f in all_files 
                     if f.is_file() 
                     and f.stat().st_size > 0  # Bo'sh fayllarni olib tashlash
-                    and not f.suffix.lower() in ('.jpg', '.webp', '.png', '.vtt', '.srt', '.ass', '.description')
+                    and f.suffix.lower() not in excluded_suffixes
                 ]
                 
                 if not media_files:

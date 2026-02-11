@@ -1163,6 +1163,7 @@ async def download_and_send_media(message: Message, url: str, platform: str, loa
         file_ext = Path(file_path).suffix.lower()
         is_video = file_ext in ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv')
         is_audio = file_ext in ('.mp3', '.m4a', '.ogg', '.wav', '.flac')
+        is_photo = file_ext in ('.jpg', '.jpeg', '.png', '.webp')
         
         sent_message = None
         
@@ -1345,6 +1346,24 @@ async def download_and_send_media(message: Message, url: str, platform: str, loa
                         title=media_data.get('title'),
                         file_size=sent_message.audio.file_size,
                         duration=sent_message.audio.duration,
+                    )
+            elif is_photo:
+                sent_message = await message.answer_photo(
+                    photo=file,
+                    caption=caption,
+                    reply_markup=keyboard,
+                )
+
+                if sent_message.photo:
+                    largest_photo = sent_message.photo[-1]
+                    await save_media_cache(
+                        url=url,
+                        platform=platform,
+                        file_id=largest_photo.file_id,
+                        file_type='photo',
+                        file_unique_id=largest_photo.file_unique_id,
+                        title=media_data.get('title'),
+                        file_size=largest_photo.file_size,
                     )
             
             else:
