@@ -35,6 +35,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import config
 from database import init_db, close_db
+from utils.media_downloader import validate_youtube_cookies, _resolve_youtube_cookies_path
 from handlers.common import router as common_router
 from handlers.admin import admin_router
 from handlers.user import user_router
@@ -118,6 +119,17 @@ async def main():
         logger.info("Database muvaffaqiyatli yaratildi")
     except Exception as e:
         logger.error(f"Database yaratishda xatolik: {e}")
+
+    # YouTube cookie tekshiruvi (ishga tushganda bir marta)
+    yt_cookies_path = _resolve_youtube_cookies_path()
+    if yt_cookies_path:
+        ok, msg = validate_youtube_cookies(yt_cookies_path)
+        if ok:
+            logger.info(f"YouTube cookies: {yt_cookies_path} — {msg}")
+        else:
+            logger.warning(f"YouTube cookies tekshiruvi: {msg}")
+    else:
+        logger.warning("YouTube cookies fayli topilmadi (YouTube yuklab olishda 'Sign in' xatosi bo'lishi mumkin).")
     
     # Graceful shutdown uchun - polling to'xtatilganda shutdown_handler chaqiriladi
     # Aiogram o'zi signal handler'larni boshqaradi

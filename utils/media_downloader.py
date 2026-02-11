@@ -110,6 +110,48 @@ def _resolve_youtube_cookies_path() -> Optional[Path]:
     return None
 
 
+def validate_youtube_cookies(cookies_path: Optional[Path]) -> Tuple[bool, str]:
+    """
+    YouTube cookies faylini tekshirish (Netscape format, youtube.com cookie'lari).
+    
+    Returns:
+        (True, xabar) — yaxshi, (False, xabar) — muammo bor.
+    """
+    if not cookies_path:
+        return False, "Cookie fayl yo'li berilmagan"
+    if not cookies_path.exists():
+        return False, f"Fayl mavjud emas: {cookies_path}"
+    if not cookies_path.is_file():
+        return False, f"Bu fayl emas (papka?): {cookies_path}"
+    
+    try:
+        content = cookies_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        return False, f"Cookie faylni o'qib bo'lmadi: {e}"
+    
+    lines = content.strip().splitlines()
+    youtube_cookies = 0
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain = parts[0].strip().lower()
+        if "youtube.com" in domain:
+            youtube_cookies += 1
+    
+    if youtube_cookies == 0:
+        return False, (
+            "Cookie faylda YouTube (youtube.com) uchun hech qanday cookie yo'q. "
+            "Fayl Netscape formatida bo'lishi va brauzerdan YouTube cookie'lari eksport qilingan bo'lishi kerak. "
+            "Qo'llanma: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
+        )
+    
+    return True, f"YouTube cookie'lari: {youtube_cookies} ta"
+
+
 def _prepare_cookiefile_for_ydl(source_cookie_path: Optional[Path], temp_dir: str, tag: str) -> Optional[Path]:
     """
     Read-only cookiefile muammosini oldini olish uchun cookie faylni temp papkaga nusxalash.
@@ -458,8 +500,12 @@ async def download_media(url: str, platform: str) -> Optional[Dict]:
                 source_cookies_path = _resolve_youtube_cookies_path()
                 youtube_cookies_path = _prepare_cookiefile_for_ydl(source_cookies_path, temp_dir, "youtube")
                 if youtube_cookies_path:
+                    ok, msg = validate_youtube_cookies(source_cookies_path)
+                    if ok:
+                        logger.info(f"YouTube cookies ishlatilmoqda: {source_cookies_path} — {msg}")
+                    else:
+                        logger.warning(f"YouTube cookies tekshiruvi: {msg}. Auth xatolari bo'lishi mumkin.")
                     ydl_opts['cookiefile'] = str(youtube_cookies_path)
-                    logger.info(f"YouTube cookies ishlatilmoqda: {source_cookies_path}")
                 else:
                     logger.warning("YouTube cookies fayl topilmadi (YOUTUBE_COOKIES_FILE yoki cookies.txt)")
             

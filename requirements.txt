@@ -4,4 +4,4 @@ sqlalchemy>=2.0.0
 asyncpg>=0.29.0
 alembic>=1.13.0
 yt-dlp
-shazamio>=0.1.6.1
+shazamio
