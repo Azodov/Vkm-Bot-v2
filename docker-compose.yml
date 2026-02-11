@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    container_name: vkm-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    # agar loglarni kichraytirish kerak bo'lsa:
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

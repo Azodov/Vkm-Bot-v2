@@ -1,0 +1,54 @@
+name: Deploy VKM Bot
+
+on:
+  push:
+    branches: ["master"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+
+            APP_DIR="${{ secrets.APP_DIR }}"
+            BRANCH="master"
+
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+
+            # Token loglarda ko'rinmasin
+            set +x
+            REPO_URL="https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git"
+            set -x
+
+            if [ ! -d ".git" ]; then
+              git clone --branch "$BRANCH" "$REPO_URL" .
+            else
+              # Agar avval SSH/oddiy URL bo'lsa ham yangilab qo'yamiz
+              git remote set-url origin "$REPO_URL"
+            fi
+
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            # .env serverda bo'lishi kerak (repoda emas)
+            if [ ! -f ".env" ]; then
+              echo "ERROR: .env not found in $APP_DIR"
+              exit 1
+            fi
+
+            docker compose down || true
+            docker compose up -d --build
+
+            docker ps --filter "name=vkm-bot"
